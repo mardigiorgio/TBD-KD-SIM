@@ -1,33 +1,51 @@
+"""
+Simple Pendulum - Explicit Euler Method
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 
-g = 9.81
-L = 1.0
-dt = 0.001  
-num_steps = 1000
+# Physical constants
+GRAVITY = 9.81
+PENDULUM_LENGTH = 1.0
 
-def f(y):
-    theta, omega = y
-    return np.array([omega, -g/L * np.sin(theta)])
+# Simulation parameters
+TIME_STEP = 0.01
+END_TIME = 10.0
 
-y = np.array([np.pi/4, 0.0])
 
-dt = 0.01
-t_end = 10.0
-t = 0.0
+def pendulum_dynamics(state):
+    """Compute state derivative: [theta_dot, omega_dot]"""
+    theta, omega = state
+    theta_dot = omega
+    omega_dot = -(GRAVITY / PENDULUM_LENGTH) * np.sin(theta)
+    return np.array([theta_dot, omega_dot])
 
-history = [y.copy()]
 
-while t < t_end:
-    y=y + dt * f(y)
-    
-    t += dt
-    history.append(y.copy())
+# Initial conditions
+initial_theta = np.pi / 4
+initial_omega = 0.0
+state = np.array([initial_theta, initial_omega])
 
-history = np.array(history)
+# Run simulation
+current_time = 0.0
+state_history = [state.copy()]
 
-plt.plot(np.arange(len(history)) * dt, history[:, 0])
-plt.xlabel('Time (s)')
-plt.ylabel('Angle (rad)')
-plt.grid()
+while current_time < END_TIME:
+    state = state + TIME_STEP * pendulum_dynamics(state)
+    current_time += TIME_STEP
+    state_history.append(state.copy())
+
+state_history = np.array(state_history)
+time_array = np.arange(len(state_history)) * TIME_STEP
+
+# Plot results
+plt.figure(figsize=(10, 6))
+plt.plot(time_array, state_history[:, 0], label='Angle (theta)', linewidth=2)
+plt.xlabel('Time (s)', fontsize=12)
+plt.ylabel('Angle (rad)', fontsize=12)
+plt.title('Simple Pendulum - Explicit Euler Method', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.tight_layout()
 plt.show()

@@ -1,56 +1,78 @@
+"""
+Simple Pendulum - Implicit Euler Method with Newton-Raphson solver
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 
-g = 9.81
-L = 1.0
-dt = 0.001  
-num_steps = 1000
+# Physical constants
+GRAVITY = 9.81
+PENDULUM_LENGTH = 1.0
 
-def f(y):
-    theta, omega = y
-    return np.array([omega, -g/L * np.sin(theta)])
+# Simulation parameters
+TIME_STEP = 0.01
+END_TIME = 10.0
+NEWTON_MAX_ITERATIONS = 10
+NEWTON_TOLERANCE = 1e-10
 
-def jacobian(y):
-    theta, omega = y
+
+def pendulum_dynamics(state):
+    """Compute state derivative: [theta_dot, omega_dot]"""
+    theta, omega = state
+    theta_dot = omega
+    omega_dot = -(GRAVITY / PENDULUM_LENGTH) * np.sin(theta)
+    return np.array([theta_dot, omega_dot])
+
+
+def pendulum_jacobian(state):
+    """Compute Jacobian matrix of pendulum dynamics"""
+    theta, omega = state
     return np.array([
         [0, 1],
-        [-g/L * np.cos(theta), 0]
+        [-(GRAVITY / PENDULUM_LENGTH) * np.cos(theta), 0]
     ])
 
-def newton_step(y):
-    guess = y.copy()
 
-    for k in range(10):
-        G = guess - y - dt * f(guess)
-        dG = np.eye(2) - dt * jacobian(guess)
+def implicit_euler_step(state_current):
+    """Perform one implicit Euler step using Newton's method"""
+    state_next_guess = state_current.copy()
 
-        delta = np.linalg.solve(dG, -G)
-        guess = guess + delta
+    for iteration in range(NEWTON_MAX_ITERATIONS):
+        residual = state_next_guess - state_current - TIME_STEP * pendulum_dynamics(state_next_guess)
+        residual_jacobian = np.eye(2) - TIME_STEP * pendulum_jacobian(state_next_guess)
+        delta = np.linalg.solve(residual_jacobian, -residual)
+        state_next_guess = state_next_guess + delta
 
-        if np.linalg.norm(G) < 1e-10:
+        if np.linalg.norm(residual) < NEWTON_TOLERANCE:
             break
-    y = guess
-    return y
+
+    return state_next_guess
 
 
-y = np.array([np.pi/4, 0.0])
+# Initial conditions
+initial_theta = np.pi / 4
+initial_omega = 0.0
+state = np.array([initial_theta, initial_omega])
 
-dt = 0.01
-t_end = 10.0
-t = 0.0
+# Run simulation
+current_time = 0.0
+state_history = [state.copy()]
 
-history = [y.copy()]
+while current_time < END_TIME:
+    state = implicit_euler_step(state)
+    current_time += TIME_STEP
+    state_history.append(state.copy())
 
-while t < t_end:
-    y = newton_step(y)
+state_history = np.array(state_history)
+time_array = np.arange(len(state_history)) * TIME_STEP
 
-    t += dt
-    history.append(y.copy())
-
-history = np.array(history)
-
-plt.plot(np.arange(len(history)) * dt, history[:, 0])
-plt.xlabel('Time (s)')
-plt.ylabel('Angle (rad)')
-plt.grid()
+# Plot results
+plt.figure(figsize=(10, 6))
+plt.plot(time_array, state_history[:, 0], label='Angle (theta)', linewidth=2)
+plt.xlabel('Time (s)', fontsize=12)
+plt.ylabel('Angle (rad)', fontsize=12)
+plt.title('Simple Pendulum - Implicit Euler Method', fontsize=14)
+plt.grid(True, alpha=0.3)
+plt.legend()
+plt.tight_layout()
 plt.show()
