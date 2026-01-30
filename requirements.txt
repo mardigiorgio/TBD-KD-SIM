@@ -10,5 +10,5 @@ pillow==11.3.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 six==1.17.0
-warp==1.0.4
+warp-lang==1.11.0
 zipp==3.23.0
