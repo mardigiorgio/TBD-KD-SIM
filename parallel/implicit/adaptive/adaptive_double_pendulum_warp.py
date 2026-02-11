@@ -209,6 +209,7 @@ class AdaptiveDoublePendulumWarp:
 
     def _implicit_euler_step_gpu(self, theta1, omega1, theta2, omega2, dt):
         """Implicit Euler step using fixed-point iteration on GPU"""
+        print("\rStep Size: " + str(dt) + "    ", end="", flush=True)
         n = self.num_pendulums
 
         # Store previous state
@@ -266,6 +267,9 @@ class AdaptiveDoublePendulumWarp:
         max_grow = 5.0
         hysteresis_low = 0.9
         hysteresis_high = 1.2
+
+        if np.isnan(err) or np.isinf(err):
+            return dt * min_shrink
 
         if err == 0:
             dt_new = dt * max_grow

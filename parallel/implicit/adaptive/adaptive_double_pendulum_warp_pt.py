@@ -183,6 +183,7 @@ class AdaptiveDoublePendulumWarpPT:
 
         dt_arr: numpy float32 array [n] — each pendulum's time step.
         """
+        print("\rStep Size: " + str(dt_arr) + "    ", end="", flush=True)
         n = self.num_pendulums
 
         theta1_prev = wp.array(theta1.numpy(), dtype=wp.float32)
@@ -241,6 +242,9 @@ class AdaptiveDoublePendulumWarpPT:
         max_grow = 5.0
         hysteresis_low = 0.9
         hysteresis_high = 1.2
+
+        if np.isnan(err) or np.isinf(err):
+            return dt * min_shrink
 
         if err == 0:
             dt_new = dt * max_grow

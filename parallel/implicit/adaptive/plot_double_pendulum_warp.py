@@ -14,8 +14,8 @@ from adaptive_double_pendulum_warp_pt import AdaptiveDoublePendulumWarpPT
 
 # --- Shared configuration ---
 num = 5
-end_time = 30.0
-epsilon_acc = 1e-3
+end_time = 60
+epsilon_acc = 1e-4
 initial_dt = 0.1
 
 theta1_init = np.array([np.pi / 4 + i * 0.05 for i in range(num)], dtype=np.float32)
@@ -24,7 +24,6 @@ theta2_init = np.array([np.pi / 2 + i * 0.05 for i in range(num)], dtype=np.floa
 colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
 
 # --- Run global-dt integrator ---
-print("Running global-dt integrator...")
 global_sim = AdaptiveDoublePendulumWarp(
     num_pendulums=num,
     initial_theta1=theta1_init,
@@ -38,7 +37,6 @@ global_sim = AdaptiveDoublePendulumWarp(
 global_sim.run(verbose=True)
 
 # --- Run per-thread-dt integrator ---
-print("\nRunning per-thread-dt integrator...")
 pt_sim = AdaptiveDoublePendulumWarpPT(
     num_pendulums=num,
     initial_theta1=theta1_init,
