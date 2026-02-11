@@ -15,8 +15,8 @@ from adaptive_double_pendulum_warp_pt import AdaptiveDoublePendulumWarpPT
 # --- Shared configuration ---
 num = 5
 end_time = 30
-epsilon_acc = 1e-2
-initial_dt = 0.1
+epsilon_acc = 1e-3
+initial_dt = epsilon_acc
 
 theta1_init = np.array([np.pi / 4 + i * 0.05 for i in range(num)], dtype=np.float32)
 theta2_init = np.array([np.pi / 2 + i * 0.05 for i in range(num)], dtype=np.float32)
