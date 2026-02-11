@@ -147,7 +147,7 @@ class AdaptiveDoublePendulumWarpPT:
         self.mass1 = np.float32(mass1)
         self.mass2 = np.float32(mass2)
 
-        self.error_order = 1
+        self.error_order = 2
         self.newton_tol = 1e-8
         self.newton_max_iter = 15
 
