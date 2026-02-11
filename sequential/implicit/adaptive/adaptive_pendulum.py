@@ -9,9 +9,9 @@ The integrator computes two estimates:
 The local truncation error is estimated as:
   e^{n+1} = ||x̂^{n+1} - x^{n+1}|| ≈ c̄δt^p
 
-where p is the order of the error estimate. The step size is then adjusted to
-maintain a user-specified accuracy ε_acc using the pure formula:
-  δt_new ← δt(ε_acc/e^{n+1})^{1/p}
+where p is the order of the error estimate. The step size is adjusted using
+a safety factor and hysteresis bands to maintain accuracy ε_acc while
+avoiding oscillatory step size behavior near the tolerance boundary.
 """
 
 import numpy as np
@@ -86,20 +86,41 @@ class AdaptivePendulum:
         self.total_newton_iterations += iterations
         return state_next
 
+    def _calc_adjusted_step_size(self, err, dt):
+        """Adjust step size with safety factor and hysteresis (cf. Drake CalcAdjustedStepSize)"""
+        safety = 0.9
+        min_shrink = 0.1
+        max_grow = 5.0
+        hysteresis_low = 0.9
+        hysteresis_high = 1.2
+
+        if err == 0:
+            dt_new = dt * max_grow
+        else:
+            dt_new = safety * dt * (self.epsilon_acc / err) ** (1.0 / (self.error_order + 1))
+
+        if dt_new > dt:
+            if dt_new < hysteresis_high * dt:
+                dt_new = dt
+        elif dt_new < dt:
+            if err <= self.epsilon_acc:
+                dt_new = dt
+            else:
+                dt_new = min(dt_new, hysteresis_low * dt)
+
+        dt_new = max(dt_new, dt * min_shrink)
+        dt_new = min(dt_new, dt * max_grow)
+        dt_new = max(dt_new, 1e-10)
+        return dt_new
+
     def step_doubling(self, state, dt):
-        """Compute error via step-doubling: e = ||x̂(δt) - x(2×δt/2)||
-        Step size: δt_new = δt(ε_acc/e)^{1/p}"""
+        """Step-doubling error estimation: e = ||x̂(δt) - x(2×δt/2)||"""
         x_full = self.implicit_euler_step(state, dt)
         x_half_1 = self.implicit_euler_step(state, dt / 2)
         x_half_2 = self.implicit_euler_step(x_half_1, dt / 2)
 
         error = np.linalg.norm(x_full - x_half_2)
-
-        if error > 0:
-            dt_new = dt * (self.epsilon_acc / error) ** (1.0 / self.error_order)
-        else:
-            dt_new = dt * 2.0
-
+        dt_new = self._calc_adjusted_step_size(error, dt)
         return x_half_2, dt_new, error
 
     def run(self, verbose=False):
