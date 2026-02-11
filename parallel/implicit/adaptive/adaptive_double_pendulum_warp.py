@@ -259,6 +259,33 @@ class AdaptiveDoublePendulumWarp:
 
         return theta1, omega1, theta2, omega2
 
+    def _calc_adjusted_step_size(self, err, dt):
+        """Adjust step size with safety factor and hysteresis (cf. Drake CalcAdjustedStepSize)"""
+        safety = 0.9
+        min_shrink = 0.1
+        max_grow = 5.0
+        hysteresis_low = 0.9
+        hysteresis_high = 1.2
+
+        if err == 0:
+            dt_new = dt * max_grow
+        else:
+            dt_new = safety * dt * (self.epsilon_acc / err) ** (1.0 / (self.error_order + 1))
+
+        if dt_new > dt:
+            if dt_new < hysteresis_high * dt:
+                dt_new = dt
+        elif dt_new < dt:
+            if err <= self.epsilon_acc:
+                dt_new = dt
+            else:
+                dt_new = min(dt_new, hysteresis_low * dt)
+
+        dt_new = max(dt_new, dt * min_shrink)
+        dt_new = min(dt_new, dt * max_grow)
+        dt_new = max(dt_new, 1e-10)
+        return dt_new
+
     def _step_doubling(self, theta1, omega1, theta2, omega2, dt):
         """Step-doubling error estimation"""
         n = self.num_pendulums
@@ -289,18 +316,7 @@ class AdaptiveDoublePendulumWarp:
         wp.synchronize()
 
         max_error = np.max(error_arr.numpy())
-
-        # Compute new dt
-        if max_error > 0:
-            dt_new = dt * (self.epsilon_acc / max_error) ** (1.0 / self.error_order)
-        else:
-            dt_new = dt * 2.0
-
-        # Safety bounds
-        dt_new = max(dt_new, dt * 0.1)
-        dt_new = min(dt_new, dt * 2.0)
-        dt_new = max(dt_new, 1e-10)
-
+        dt_new = self._calc_adjusted_step_size(max_error, dt)
         return t1_half, w1_half, t2_half, w2_half, dt_new, max_error
 
     def run(self, verbose=False):
@@ -384,23 +400,3 @@ class AdaptiveDoublePendulumWarp:
             [s[pendulum_idx] for s in self.states_theta2],
             [s[pendulum_idx] for s in self.states_omega2],
         ])
-
-
-if __name__ == "__main__":
-    # 5 pendulums with slightly different initial conditions
-    num = 5
-    theta1_init = np.array([np.pi/4 + i * 0.05 for i in range(num)], dtype=np.float32)
-    theta2_init = np.array([np.pi/2 + i * 0.05 for i in range(num)], dtype=np.float32)
-
-    integrator = AdaptiveDoublePendulumWarp(
-        num_pendulums=num,
-        initial_theta1=theta1_init,
-        initial_omega1=0.0,
-        initial_theta2=theta2_init,
-        initial_omega2=0.0,
-        epsilon_acc=1e-4,
-        end_time=5.0,
-        initial_dt=0.1
-    )
-
-    integrator.run(verbose=True)
