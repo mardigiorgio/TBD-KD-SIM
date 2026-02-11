@@ -14,8 +14,8 @@ from adaptive_double_pendulum_warp_pt import AdaptiveDoublePendulumWarpPT
 
 # --- Shared configuration ---
 num = 5
-end_time = 60
-epsilon_acc = 1e-4
+end_time = 30
+epsilon_acc = 1e-2
 initial_dt = 0.1
 
 theta1_init = np.array([np.pi / 4 + i * 0.05 for i in range(num)], dtype=np.float32)
@@ -151,7 +151,7 @@ ax.set_xticklabels([f'P{i+1}' for i in range(num)])
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.3, axis='y', linestyle='--')
 
-fig.suptitle('Global dt vs Per-Thread dt — 30s Double Pendulum Chaos Comparison',
+fig.suptitle('Global dt vs Per-Thread dt — ' + str(end_time) + '(s) Double Pendulum Comparison',
              fontsize=14, fontweight='bold')
 fig.tight_layout()
 plt.show()

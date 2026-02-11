@@ -249,7 +249,7 @@ class AdaptiveDoublePendulumWarpPT:
         if err == 0:
             dt_new = dt * max_grow
         else:
-            dt_new = safety * dt * (self.epsilon_acc / err) ** (1.0 / (self.error_order + 1))
+            dt_new = safety * dt * (self.epsilon_acc / err) ** (1.0 / self.error_order)
 
         if dt_new > dt:
             if dt_new < hysteresis_high * dt:
