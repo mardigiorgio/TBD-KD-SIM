@@ -1,0 +1,10 @@
+[project]
+name = "tbh-kd-sim"
+version = "0.1.0"
+description = "Numerical integrator simulations for pendulum systems"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "warp-lang",
+]
