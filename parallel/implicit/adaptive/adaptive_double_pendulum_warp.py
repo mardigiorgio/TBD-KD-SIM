@@ -147,7 +147,8 @@ class AdaptiveDoublePendulumWarp:
                  initial_theta2, initial_omega2, epsilon_acc,
                  end_time=10.0, initial_dt=0.1,
                  gravity=9.81, length1=1.0, length2=1.0,
-                 mass1=1.0, mass2=1.0):
+                 mass1=1.0, mass2=1.0,
+                 quiet=False, store_history=True):
         """
         Initialize adaptive double pendulum simulator with WARP GPU acceleration
 
@@ -165,6 +166,8 @@ class AdaptiveDoublePendulumWarp:
             length2: Second pendulum length L₂ (m)
             mass1: First pendulum mass m₁ (kg)
             mass2: Second pendulum mass m₂ (kg)
+            quiet: Suppress per-step print output
+            store_history: Store full trajectory history (disable for benchmarking)
         """
         self.num_pendulums = num_pendulums
         self.epsilon_acc = epsilon_acc
@@ -176,8 +179,11 @@ class AdaptiveDoublePendulumWarp:
         self.mass1 = np.float32(mass1)
         self.mass2 = np.float32(mass2)
 
+        self.quiet = quiet
+        self.store_history = store_history
+
         self.error_order = 2
-        self.newton_tol = 1e-8
+        self.newton_tol = 1e-5   # float32 machine eps ~1.2e-7, so 1e-8 is unreachable
         self.newton_max_iter = 15
 
         # Convert initial conditions to arrays
@@ -207,9 +213,14 @@ class AdaptiveDoublePendulumWarp:
         self.rejected_steps = 0
         self.wall_clock_time = 0.0
 
+        # Final state (always stored, even without history)
+        self.final_theta1 = None
+        self.final_omega1 = None
+        self.final_theta2 = None
+        self.final_omega2 = None
+
     def _implicit_euler_step_gpu(self, theta1, omega1, theta2, omega2, dt):
         """Implicit Euler step using fixed-point iteration on GPU"""
-        print("\rStep Size: " + str(dt) + "    ", end="", flush=True)
         n = self.num_pendulums
 
         # Store previous state
@@ -335,13 +346,14 @@ class AdaptiveDoublePendulumWarp:
         current_time = 0.0
         dt = self.initial_dt
 
-        self.time = [current_time]
-        self.states_theta1 = [theta1.numpy().copy()]
-        self.states_omega1 = [omega1.numpy().copy()]
-        self.states_theta2 = [theta2.numpy().copy()]
-        self.states_omega2 = [omega2.numpy().copy()]
-        self.dt_history = [dt]
-        self.errors = [0.0]
+        if self.store_history:
+            self.time = [current_time]
+            self.states_theta1 = [theta1.numpy().copy()]
+            self.states_omega1 = [omega1.numpy().copy()]
+            self.states_theta2 = [theta2.numpy().copy()]
+            self.states_omega2 = [omega2.numpy().copy()]
+            self.dt_history = [dt]
+            self.errors = [0.0]
         self.accepted_steps = 0
         self.rejected_steps = 0
 
@@ -359,19 +371,26 @@ class AdaptiveDoublePendulumWarp:
                 omega2 = w2_new
                 current_time += dt
 
-                self.time.append(current_time)
-                self.states_theta1.append(theta1.numpy().copy())
-                self.states_omega1.append(omega1.numpy().copy())
-                self.states_theta2.append(theta2.numpy().copy())
-                self.states_omega2.append(omega2.numpy().copy())
-                self.dt_history.append(dt)
-                self.errors.append(error)
+                if self.store_history:
+                    self.time.append(current_time)
+                    self.states_theta1.append(theta1.numpy().copy())
+                    self.states_omega1.append(omega1.numpy().copy())
+                    self.states_theta2.append(theta2.numpy().copy())
+                    self.states_omega2.append(omega2.numpy().copy())
+                    self.dt_history.append(dt)
+                    self.errors.append(error)
 
                 self.accepted_steps += 1
             else:
                 self.rejected_steps += 1
 
             dt = dt_new
+
+        # Store final state
+        self.final_theta1 = theta1.numpy().copy()
+        self.final_omega1 = omega1.numpy().copy()
+        self.final_theta2 = theta2.numpy().copy()
+        self.final_omega2 = omega2.numpy().copy()
 
         self.wall_clock_time = time.perf_counter() - start_time
 

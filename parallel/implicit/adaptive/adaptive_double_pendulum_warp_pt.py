@@ -129,13 +129,18 @@ class AdaptiveDoublePendulumWarpPT:
                  initial_theta2, initial_omega2, epsilon_acc,
                  end_time=10.0, initial_dt=0.1,
                  gravity=9.81, length1=1.0, length2=1.0,
-                 mass1=1.0, mass2=1.0):
+                 mass1=1.0, mass2=1.0,
+                 quiet=False, store_history=True):
         """
         Per-thread adaptive double pendulum simulator with WARP GPU acceleration.
 
         Each pendulum independently controls its own time step based on its
         own local truncation error, rather than being constrained by the
         worst-case pendulum across the batch.
+
+        Parameters:
+            quiet: Suppress per-step print output
+            store_history: Store full trajectory history (disable for benchmarking)
         """
         self.num_pendulums = num_pendulums
         self.epsilon_acc = epsilon_acc
@@ -146,9 +151,11 @@ class AdaptiveDoublePendulumWarpPT:
         self.length2 = np.float32(length2)
         self.mass1 = np.float32(mass1)
         self.mass2 = np.float32(mass2)
+        self.quiet = quiet
+        self.store_history = store_history
 
         self.error_order = 2
-        self.newton_tol = 1e-8
+        self.newton_tol = 1e-5   # float32 machine eps ~1.2e-7, so 1e-8 is unreachable
         self.newton_max_iter = 15
 
         if np.isscalar(initial_theta1):
@@ -178,12 +185,17 @@ class AdaptiveDoublePendulumWarpPT:
         self.rejected_steps = np.zeros(n, dtype=int)
         self.wall_clock_time = 0.0
 
+        # Final state (always stored, even without history)
+        self.final_theta1 = None
+        self.final_omega1 = None
+        self.final_theta2 = None
+        self.final_omega2 = None
+
     def _implicit_euler_step_gpu_pt(self, theta1, omega1, theta2, omega2, dt_arr):
         """Implicit Euler step with per-thread dt array.
 
         dt_arr: numpy float32 array [n] — each pendulum's time step.
         """
-        print("\rStep Size: " + str(dt_arr) + "    ", end="", flush=True)
         n = self.num_pendulums
 
         theta1_prev = wp.array(theta1.numpy(), dtype=wp.float32)
@@ -323,14 +335,15 @@ class AdaptiveDoublePendulumWarpPT:
         active = np.ones(n, dtype=bool)
 
         # Record initial state
-        for i in range(n):
-            self.times[i].append(0.0)
-            self.states_theta1[i].append(float(theta1_np[i]))
-            self.states_omega1[i].append(float(omega1_np[i]))
-            self.states_theta2[i].append(float(theta2_np[i]))
-            self.states_omega2[i].append(float(omega2_np[i]))
-            self.dt_histories[i].append(float(dt[i]))
-            self.error_histories[i].append(0.0)
+        if self.store_history:
+            for i in range(n):
+                self.times[i].append(0.0)
+                self.states_theta1[i].append(float(theta1_np[i]))
+                self.states_omega1[i].append(float(omega1_np[i]))
+                self.states_theta2[i].append(float(theta2_np[i]))
+                self.states_omega2[i].append(float(omega2_np[i]))
+                self.dt_histories[i].append(float(dt[i]))
+                self.error_histories[i].append(0.0)
 
         while np.any(active):
             # Clamp dt so we don't overshoot end_time
@@ -364,13 +377,14 @@ class AdaptiveDoublePendulumWarpPT:
                 omega2_np[i] = w2_np_new[i]
                 current_time[i] += dt_clamped[i]
 
-                self.times[i].append(float(current_time[i]))
-                self.states_theta1[i].append(float(theta1_np[i]))
-                self.states_omega1[i].append(float(omega1_np[i]))
-                self.states_theta2[i].append(float(theta2_np[i]))
-                self.states_omega2[i].append(float(omega2_np[i]))
-                self.dt_histories[i].append(float(dt_clamped[i]))
-                self.error_histories[i].append(float(errors[i]))
+                if self.store_history:
+                    self.times[i].append(float(current_time[i]))
+                    self.states_theta1[i].append(float(theta1_np[i]))
+                    self.states_omega1[i].append(float(omega1_np[i]))
+                    self.states_theta2[i].append(float(theta2_np[i]))
+                    self.states_omega2[i].append(float(omega2_np[i]))
+                    self.dt_histories[i].append(float(dt_clamped[i]))
+                    self.error_histories[i].append(float(errors[i]))
                 self.accepted_steps[i] += 1
 
             self.rejected_steps[rejected] += 1
@@ -380,6 +394,12 @@ class AdaptiveDoublePendulumWarpPT:
 
             # Update dt for next iteration
             dt = dt_new
+
+        # Store final state
+        self.final_theta1 = theta1_np.copy()
+        self.final_omega1 = omega1_np.copy()
+        self.final_theta2 = theta2_np.copy()
+        self.final_omega2 = omega2_np.copy()
 
         self.wall_clock_time = time.perf_counter() - start_time
 
