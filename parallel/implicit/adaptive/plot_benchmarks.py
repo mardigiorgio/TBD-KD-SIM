@@ -196,6 +196,15 @@ def plot_total_steps(data_wp=None, data_sc=None):
                   markersize=8, markerfacecolor='white', markeredgewidth=2.5,
                   label='Per-Thread dt (mean per pendulum)')
 
+        # Show max steps if available — this is the actual PT loop iteration count
+        # and explains why PT wall time grows even as mean stays flat
+        if 'pt_accepted_max' in data_sc:
+            pt_max_N = np.median(
+                data_sc['pt_accepted_max'] + data_sc['pt_rejected_max'], axis=1)
+            ax.loglog(N, pt_max_N, '^--', color=COLOR_PT, linewidth=1.5,
+                      markersize=6, alpha=0.6,
+                      label='Per-Thread dt (max per pendulum = loop iters)')
+
         ax.set_xlabel('Number of Parallel Simulations (N)', fontsize=14)
         ax.set_ylabel('Total Steps (Accepted + Rejected)', fontsize=14)
         ax.set_title(f'Total Steps vs N\n(eps={float(data_sc["epsilon_acc"]):.0e})',

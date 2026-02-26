@@ -92,7 +92,7 @@ def warmup_gpu():
 def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
                               end_time=10.0, num_repeats=3):
     if N_values is None:
-        N_values = [1, 2, 5, 10, 50, 100, 500, 1000, 2000, 5000]
+        N_values = [1, 2, 5, 10, 50, 100, 500, 1000, 2000, 5000, 10000]
 
     n_pts = len(N_values)
     results = dict(
@@ -108,6 +108,9 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
         pt_rejected_total=np.zeros((n_pts, num_repeats)),
         pt_accepted_mean=np.zeros((n_pts, num_repeats)),
         pt_rejected_mean=np.zeros((n_pts, num_repeats)),
+        # max across pendulums ≈ PT loop iteration count (determines actual wall time)
+        pt_accepted_max=np.zeros((n_pts, num_repeats)),
+        pt_rejected_max=np.zeros((n_pts, num_repeats)),
     )
 
     for i, N in enumerate(N_values):
@@ -116,6 +119,7 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
             t1, w1, t2, w2 = generate_chaotic_initial_conditions(N, seed=42 + rep)
 
             # --- Global dt ---
+            print(f"  Rep {rep+1}/{num_repeats} Global:", end='', flush=True)
             sim_g = AdaptiveDoublePendulumWarp(
                 num_pendulums=N,
                 initial_theta1=t1.copy(), initial_omega1=w1.copy(),
@@ -124,13 +128,14 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
                 initial_dt=0.01,
                 quiet=True, store_history=False,
             )
-            sim_g.run(verbose=False)
+            sim_g.run(verbose=False, log_every=500)
 
             results['global_times'][i, rep] = sim_g.wall_clock_time
             results['global_accepted'][i, rep] = sim_g.accepted_steps
             results['global_rejected'][i, rep] = sim_g.rejected_steps
 
             # --- Per-thread dt ---
+            print(f"  Rep {rep+1}/{num_repeats} PT:    ", end='', flush=True)
             sim_pt = AdaptiveDoublePendulumWarpPT(
                 num_pendulums=N,
                 initial_theta1=t1.copy(), initial_omega1=w1.copy(),
@@ -139,16 +144,17 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
                 initial_dt=0.01,
                 quiet=True, store_history=False,
             )
-            sim_pt.run(verbose=False)
+            sim_pt.run(verbose=False, log_every=500)
 
             results['pt_times'][i, rep] = sim_pt.wall_clock_time
             results['pt_accepted_total'][i, rep] = np.sum(sim_pt.accepted_steps)
             results['pt_rejected_total'][i, rep] = np.sum(sim_pt.rejected_steps)
             results['pt_accepted_mean'][i, rep] = np.mean(sim_pt.accepted_steps)
             results['pt_rejected_mean'][i, rep] = np.mean(sim_pt.rejected_steps)
+            results['pt_accepted_max'][i, rep] = np.max(sim_pt.accepted_steps)
+            results['pt_rejected_max'][i, rep] = np.max(sim_pt.rejected_steps)
 
-            print(f"  Rep {rep+1}/{num_repeats}: "
-                  f"Global={sim_g.wall_clock_time:.3f}s "
+            print(f"  => Global={sim_g.wall_clock_time:.3f}s "
                   f"({sim_g.accepted_steps} acc / {sim_g.rejected_steps} rej), "
                   f"PT={sim_pt.wall_clock_time:.3f}s "
                   f"({np.sum(sim_pt.accepted_steps)} acc / {np.sum(sim_pt.rejected_steps)} rej)")
@@ -164,7 +170,7 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
 def run_work_precision_benchmark(epsilon_values=None, N=100,
                                  end_time=10.0, num_repeats=3):
     if epsilon_values is None:
-        epsilon_values = [1e-1, 1e-2, 1e-3, 1e-4]
+        epsilon_values = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]
 
     n_pts = len(epsilon_values)
     results = dict(
@@ -180,6 +186,9 @@ def run_work_precision_benchmark(epsilon_values=None, N=100,
         pt_rejected_total=np.zeros((n_pts, num_repeats)),
         pt_accepted_mean=np.zeros((n_pts, num_repeats)),
         pt_rejected_mean=np.zeros((n_pts, num_repeats)),
+        # max across pendulums ≈ PT loop iteration count (determines actual wall time)
+        pt_accepted_max=np.zeros((n_pts, num_repeats)),
+        pt_rejected_max=np.zeros((n_pts, num_repeats)),
         global_energy_drift=np.zeros((n_pts, num_repeats)),
         pt_energy_drift=np.zeros((n_pts, num_repeats)),
     )
@@ -190,6 +199,7 @@ def run_work_precision_benchmark(epsilon_values=None, N=100,
             t1, w1, t2, w2 = generate_chaotic_initial_conditions(N, seed=42 + rep)
 
             # --- Global dt ---
+            print(f"  Rep {rep+1}/{num_repeats} Global:", end='', flush=True)
             sim_g = AdaptiveDoublePendulumWarp(
                 num_pendulums=N,
                 initial_theta1=t1.copy(), initial_omega1=w1.copy(),
@@ -198,7 +208,7 @@ def run_work_precision_benchmark(epsilon_values=None, N=100,
                 initial_dt=0.01,
                 quiet=True, store_history=False,
             )
-            sim_g.run(verbose=False)
+            sim_g.run(verbose=False, log_every=500)
 
             results['global_times'][i, rep] = sim_g.wall_clock_time
             results['global_accepted'][i, rep] = sim_g.accepted_steps
@@ -209,6 +219,7 @@ def run_work_precision_benchmark(epsilon_values=None, N=100,
                 sim_g.final_theta2, sim_g.final_omega2)
 
             # --- Per-thread dt ---
+            print(f"  Rep {rep+1}/{num_repeats} PT:    ", end='', flush=True)
             sim_pt = AdaptiveDoublePendulumWarpPT(
                 num_pendulums=N,
                 initial_theta1=t1.copy(), initial_omega1=w1.copy(),
@@ -217,20 +228,21 @@ def run_work_precision_benchmark(epsilon_values=None, N=100,
                 initial_dt=0.01,
                 quiet=True, store_history=False,
             )
-            sim_pt.run(verbose=False)
+            sim_pt.run(verbose=False, log_every=500)
 
             results['pt_times'][i, rep] = sim_pt.wall_clock_time
             results['pt_accepted_total'][i, rep] = np.sum(sim_pt.accepted_steps)
             results['pt_rejected_total'][i, rep] = np.sum(sim_pt.rejected_steps)
             results['pt_accepted_mean'][i, rep] = np.mean(sim_pt.accepted_steps)
             results['pt_rejected_mean'][i, rep] = np.mean(sim_pt.rejected_steps)
+            results['pt_accepted_max'][i, rep] = np.max(sim_pt.accepted_steps)
+            results['pt_rejected_max'][i, rep] = np.max(sim_pt.rejected_steps)
             results['pt_energy_drift'][i, rep] = compute_energy_drift(
                 t1, w1, t2, w2,
                 sim_pt.final_theta1, sim_pt.final_omega1,
                 sim_pt.final_theta2, sim_pt.final_omega2)
 
-            print(f"  Rep {rep+1}/{num_repeats}: "
-                  f"Global={sim_g.wall_clock_time:.3f}s "
+            print(f"  => Global={sim_g.wall_clock_time:.3f}s "
                   f"(E_drift={results['global_energy_drift'][i,rep]:.2e}), "
                   f"PT={sim_pt.wall_clock_time:.3f}s "
                   f"(E_drift={results['pt_energy_drift'][i,rep]:.2e})")

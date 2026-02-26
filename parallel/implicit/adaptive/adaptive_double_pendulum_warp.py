@@ -83,29 +83,6 @@ def implicit_euler_residual(
 
 
 @wp.kernel
-def compute_error(
-    theta1_full: wp.array(dtype=wp.float32),
-    omega1_full: wp.array(dtype=wp.float32),
-    theta2_full: wp.array(dtype=wp.float32),
-    omega2_full: wp.array(dtype=wp.float32),
-    theta1_half: wp.array(dtype=wp.float32),
-    omega1_half: wp.array(dtype=wp.float32),
-    theta2_half: wp.array(dtype=wp.float32),
-    omega2_half: wp.array(dtype=wp.float32),
-    error_out: wp.array(dtype=wp.float32),
-):
-    """Compute error between full step and two half steps"""
-    tid = wp.tid()
-
-    d0 = theta1_full[tid] - theta1_half[tid]
-    d1 = omega1_full[tid] - omega1_half[tid]
-    d2 = theta2_full[tid] - theta2_half[tid]
-    d3 = omega2_full[tid] - omega2_half[tid]
-
-    error_out[tid] = wp.sqrt(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3)
-
-
-@wp.kernel
 def copy_state(
     src_t1: wp.array(dtype=wp.float32),
     src_w1: wp.array(dtype=wp.float32),
@@ -142,12 +119,35 @@ def explicit_euler_step(
     omega2[tid] = omega2[tid] + dt * alpha2[tid]
 
 
+@wp.kernel
+def fixed_point_update(
+    theta1:      wp.array(dtype=wp.float32),
+    omega1:      wp.array(dtype=wp.float32),
+    theta2:      wp.array(dtype=wp.float32),
+    omega2:      wp.array(dtype=wp.float32),
+    theta1_prev: wp.array(dtype=wp.float32),
+    omega1_prev: wp.array(dtype=wp.float32),
+    theta2_prev: wp.array(dtype=wp.float32),
+    omega2_prev: wp.array(dtype=wp.float32),
+    alpha1:      wp.array(dtype=wp.float32),
+    alpha2:      wp.array(dtype=wp.float32),
+    dt:          wp.float32,
+):
+    tid = wp.tid()
+    theta1[tid] = theta1_prev[tid] + dt * omega1[tid]
+    omega1[tid] = omega1_prev[tid] + dt * alpha1[tid]
+    theta2[tid] = theta2_prev[tid] + dt * omega2[tid]
+    omega2[tid] = omega2_prev[tid] + dt * alpha2[tid]
+
+
 class AdaptiveDoublePendulumWarp:
     def __init__(self, num_pendulums, initial_theta1, initial_omega1,
                  initial_theta2, initial_omega2, epsilon_acc,
                  end_time=10.0, initial_dt=0.1,
                  gravity=9.81, length1=1.0, length2=1.0,
                  mass1=1.0, mass2=1.0,
+                 minimum_step_size=1e-10,
+                 throw_on_minimum_step_size_violation=False,
                  quiet=False, store_history=True):
         """
         Initialize adaptive double pendulum simulator with WARP GPU acceleration
@@ -166,6 +166,12 @@ class AdaptiveDoublePendulumWarp:
             length2: Second pendulum length L₂ (m)
             mass1: First pendulum mass m₁ (kg)
             mass2: Second pendulum mass m₂ (kg)
+            minimum_step_size: Smallest permitted step size (cf. Drake
+                working_minimum_step_size). Default 1e-10 s — below float32
+                significance, acts as a last-resort Zeno guard only.
+            throw_on_minimum_step_size_violation: If True, raise RuntimeError
+                when dt < minimum_step_size; if False (default), silently
+                force-accept the step (cf. Drake ValidateSmallerStepSize).
             quiet: Suppress per-step print output
             store_history: Store full trajectory history (disable for benchmarking)
         """
@@ -183,8 +189,17 @@ class AdaptiveDoublePendulumWarp:
         self.store_history = store_history
 
         self.error_order = 2
-        self.newton_tol = 1e-5   # float32 machine eps ~1.2e-7, so 1e-8 is unreachable
+        # Fix 1: couple newton_tol to epsilon_acc so solver noise << epsilon_acc.
+        # Measured float32 residual floor ~1.077e-7; clamp at 2e-7 for safety.
+        # At epsilon_acc=1e-3 this gives 1e-5 (prior behaviour); at 1e-6 gives 2e-7,
+        # ensuring ≥1 fixed-point correction fires before the loop exits.
+        # (cf. Drake integrator_base.cc — solver convergence separate from error ctrl)
+        self.newton_tol = max(epsilon_acc * 0.01, 2e-7)
         self.newton_max_iter = 15
+        # Fix 2+3: minimum step size guard and force-accept flag
+        # (cf. Drake ValidateSmallerStepSize lines 556-572, CalcAdjustedStepSize 344-355)
+        self.minimum_step_size = minimum_step_size
+        self.throw_on_minimum_step_size_violation = throw_on_minimum_step_size_violation
 
         # Convert initial conditions to arrays
         if np.isscalar(initial_theta1):
@@ -223,15 +238,15 @@ class AdaptiveDoublePendulumWarp:
         """Implicit Euler step using fixed-point iteration on GPU"""
         n = self.num_pendulums
 
-        # Store previous state
-        theta1_prev = wp.array(theta1.numpy(), dtype=wp.float32)
-        omega1_prev = wp.array(omega1.numpy(), dtype=wp.float32)
-        theta2_prev = wp.array(theta2.numpy(), dtype=wp.float32)
-        omega2_prev = wp.array(omega2.numpy(), dtype=wp.float32)
+        # On-device copies — no CPU round-trip
+        theta1_prev = wp.clone(theta1)
+        omega1_prev = wp.clone(omega1)
+        theta2_prev = wp.clone(theta2)
+        omega2_prev = wp.clone(omega2)
 
         # Work arrays
-        alpha1 = wp.zeros(n, dtype=wp.float32)
-        alpha2 = wp.zeros(n, dtype=wp.float32)
+        alpha1   = wp.zeros(n, dtype=wp.float32)
+        alpha2   = wp.zeros(n, dtype=wp.float32)
         residual = wp.zeros(n, dtype=wp.float32)
 
         # Initial guess: explicit Euler
@@ -246,33 +261,24 @@ class AdaptiveDoublePendulumWarp:
             wp.launch(double_pendulum_dynamics, dim=n,
                       inputs=[theta1, omega1, theta2, omega2, alpha1, alpha2,
                               self.length1, self.length2, self.mass1, self.mass2, self.gravity])
-
             wp.launch(implicit_euler_residual, dim=n,
                       inputs=[theta1, omega1, theta2, omega2,
                               theta1_prev, omega1_prev, theta2_prev, omega2_prev,
                               alpha1, alpha2, residual, np.float32(dt)])
-
             wp.synchronize()
-            max_residual = np.max(residual.numpy())
-
+            max_residual = np.max(residual.numpy())   # one small scalar pull — unavoidable
             if max_residual < self.newton_tol:
                 break
 
-            # Update using simple fixed-point
-            theta1_np = theta1_prev.numpy() + dt * omega1.numpy()
-            omega1_np = omega1_prev.numpy() + dt * alpha1.numpy()
-            theta2_np = theta2_prev.numpy() + dt * omega2.numpy()
-            omega2_np = omega2_prev.numpy() + dt * alpha2.numpy()
-
-            theta1 = wp.array(theta1_np.astype(np.float32), dtype=wp.float32)
-            omega1 = wp.array(omega1_np.astype(np.float32), dtype=wp.float32)
-            theta2 = wp.array(theta2_np.astype(np.float32), dtype=wp.float32)
-            omega2 = wp.array(omega2_np.astype(np.float32), dtype=wp.float32)
+            # GPU-only fixed-point update — replaces numpy round-trip
+            wp.launch(fixed_point_update, dim=n,
+                      inputs=[theta1, omega1, theta2, omega2,
+                               theta1_prev, omega1_prev, theta2_prev, omega2_prev,
+                               alpha1, alpha2, np.float32(dt)])
 
         return theta1, omega1, theta2, omega2
 
-    def _calc_adjusted_step_size(self, err, dt):
-        """Adjust step size with safety factor and hysteresis (cf. Drake CalcAdjustedStepSize)"""
+    def _calc_adjusted_step_size(self, err, dt, at_minimum_step_size=False):
         safety = 0.9
         min_shrink = 0.1
         max_grow = 5.0
@@ -280,9 +286,8 @@ class AdaptiveDoublePendulumWarp:
         hysteresis_high = 1.2
 
         if np.isnan(err) or np.isinf(err):
-            return dt * min_shrink
-
-        if err == 0:
+            dt_new = dt * min_shrink
+        elif err == 0:
             dt_new = dt * max_grow
         else:
             dt_new = safety * dt * (self.epsilon_acc / err) ** (1.0 / self.error_order)
@@ -298,43 +303,59 @@ class AdaptiveDoublePendulumWarp:
 
         dt_new = max(dt_new, dt * min_shrink)
         dt_new = min(dt_new, dt * max_grow)
-        dt_new = max(dt_new, 1e-10)
-        return dt_new
 
-    def _step_doubling(self, theta1, omega1, theta2, omega2, dt):
-        """Step-doubling error estimation"""
+        if dt_new < self.minimum_step_size:
+            if at_minimum_step_size:
+                # Already clamped last iteration — force-accept so sim can progress
+                return dt, True, True
+            if self.throw_on_minimum_step_size_violation:
+                raise RuntimeError(
+                    f"Requested step size {dt_new:.3e} s is below the minimum "
+                    f"permitted step size {self.minimum_step_size:.3e} s. "
+                    "Consider reducing minimum_step_size or increasing epsilon_acc."
+                )
+            return self.minimum_step_size, True, False
+
+        return dt_new, False, False
+
+    def _step_doubling(self, theta1, omega1, theta2, omega2, dt,
+                       at_minimum_step_size=False):
+        """Step-doubling error estimation.
+
+        Returns (t1, w1, t2, w2, dt_new, max_error, new_at_minimum, force_accept).
+        """
         n = self.num_pendulums
 
-        # Full step
-        t1_full = wp.array(theta1.numpy(), dtype=wp.float32)
-        w1_full = wp.array(omega1.numpy(), dtype=wp.float32)
-        t2_full = wp.array(theta2.numpy(), dtype=wp.float32)
-        w2_full = wp.array(omega2.numpy(), dtype=wp.float32)
+        # Full step — on-device clone
+        t1_full = wp.clone(theta1);  w1_full = wp.clone(omega1)
+        t2_full = wp.clone(theta2);  w2_full = wp.clone(omega2)
         t1_full, w1_full, t2_full, w2_full = self._implicit_euler_step_gpu(
             t1_full, w1_full, t2_full, w2_full, dt)
 
-        # Two half steps
-        t1_half = wp.array(theta1.numpy(), dtype=wp.float32)
-        w1_half = wp.array(omega1.numpy(), dtype=wp.float32)
-        t2_half = wp.array(theta2.numpy(), dtype=wp.float32)
-        w2_half = wp.array(omega2.numpy(), dtype=wp.float32)
+        # Two half steps — on-device clone
+        t1_half = wp.clone(theta1);  w1_half = wp.clone(omega1)
+        t2_half = wp.clone(theta2);  w2_half = wp.clone(omega2)
         t1_half, w1_half, t2_half, w2_half = self._implicit_euler_step_gpu(
             t1_half, w1_half, t2_half, w2_half, dt / 2)
         t1_half, w1_half, t2_half, w2_half = self._implicit_euler_step_gpu(
             t1_half, w1_half, t2_half, w2_half, dt / 2)
 
-        # Compute error
-        error_arr = wp.zeros(n, dtype=wp.float32)
-        wp.launch(compute_error, dim=n,
-                  inputs=[t1_full, w1_full, t2_full, w2_full,
-                          t1_half, w1_half, t2_half, w2_half, error_arr])
+        # Error computation in float64: dynamics stay in fp32 on GPU (RTX 4070 Ti SUPER
+        # has 1/64 fp64 throughput), only cast at comparison time.  Eliminates the
+        # ~1e-7 float32 noise floor that caused dt to stall at epsilon_acc=1e-6.
         wp.synchronize()
+        t1f = t1_full.numpy().astype(np.float64);  w1f = w1_full.numpy().astype(np.float64)
+        t2f = t2_full.numpy().astype(np.float64);  w2f = w2_full.numpy().astype(np.float64)
+        t1h = t1_half.numpy().astype(np.float64);  w1h = w1_half.numpy().astype(np.float64)
+        t2h = t2_half.numpy().astype(np.float64);  w2h = w2_half.numpy().astype(np.float64)
+        errors_f64 = np.sqrt((t1f - t1h)**2 + (w1f - w1h)**2
+                             + (t2f - t2h)**2 + (w2f - w2h)**2)
+        max_error = float(np.max(errors_f64))
+        dt_new, new_at_minimum, force_accept = self._calc_adjusted_step_size(
+            max_error, dt, at_minimum_step_size)
+        return t1_half, w1_half, t2_half, w2_half, dt_new, max_error, new_at_minimum, force_accept
 
-        max_error = np.max(error_arr.numpy())
-        dt_new = self._calc_adjusted_step_size(max_error, dt)
-        return t1_half, w1_half, t2_half, w2_half, dt_new, max_error
-
-    def run(self, verbose=False):
+    def run(self, verbose=False, log_every=0):
         """Run adaptive simulation"""
         start_time = time.perf_counter()
 
@@ -345,6 +366,7 @@ class AdaptiveDoublePendulumWarp:
 
         current_time = 0.0
         dt = self.initial_dt
+        at_minimum_step_size = False  # Fix 3: track force-accept state across steps
 
         if self.store_history:
             self.time = [current_time]
@@ -356,20 +378,30 @@ class AdaptiveDoublePendulumWarp:
             self.errors = [0.0]
         self.accepted_steps = 0
         self.rejected_steps = 0
+        _total_attempts = 0
 
         while current_time < self.end_time:
-            if current_time + dt > self.end_time:
-                dt = self.end_time - current_time
+            dt_used = min(dt, self.end_time - current_time)
+            # Fix 4: flag when dt was clamped to hit end_time exactly so we don't
+            # feed the artificially-small step size back as the ideal next step
+            # (cf. Drake StepOnceErrorControlledAtMost lines 100-111, 154-158)
+            h_was_artificially_limited = (dt_used < 0.95 * dt)
 
-            t1_new, w1_new, t2_new, w2_new, dt_new, error = self._step_doubling(
-                theta1, omega1, theta2, omega2, dt)
+            t1_new, w1_new, t2_new, w2_new, dt_new, error, new_at_min, force_accept = \
+                self._step_doubling(theta1, omega1, theta2, omega2,
+                                    dt_used, at_minimum_step_size)
 
-            if error <= self.epsilon_acc:
+            _total_attempts += 1
+            if log_every > 0 and _total_attempts % log_every == 0:
+                print(f"\r    t={current_time:.4f}/{self.end_time:.1f}s  dt={dt_used:.3e}  acc={self.accepted_steps}  rej={self.rejected_steps}   ",
+                      end='', flush=True)
+
+            if error <= self.epsilon_acc or force_accept:
                 theta1 = t1_new
                 omega1 = w1_new
                 theta2 = t2_new
                 omega2 = w2_new
-                current_time += dt
+                current_time += dt_used
 
                 if self.store_history:
                     self.time.append(current_time)
@@ -377,14 +409,20 @@ class AdaptiveDoublePendulumWarp:
                     self.states_omega1.append(omega1.numpy().copy())
                     self.states_theta2.append(theta2.numpy().copy())
                     self.states_omega2.append(omega2.numpy().copy())
-                    self.dt_history.append(dt)
+                    self.dt_history.append(dt_used)
                     self.errors.append(error)
 
                 self.accepted_steps += 1
+                at_minimum_step_size = new_at_min
+                if not h_was_artificially_limited:
+                    dt = dt_new
             else:
                 self.rejected_steps += 1
+                dt = dt_new
+                at_minimum_step_size = new_at_min
 
-            dt = dt_new
+        if log_every > 0:
+            print()  # newline after final \r status
 
         # Store final state
         self.final_theta1 = theta1.numpy().copy()
