@@ -15,111 +15,60 @@ import time
 wp.init()
 
 
-@wp.kernel
-def double_pendulum_dynamics(
-    theta1: wp.array(dtype=wp.float32),
-    omega1: wp.array(dtype=wp.float32),
-    theta2: wp.array(dtype=wp.float32),
-    omega2: wp.array(dtype=wp.float32),
-    alpha1_out: wp.array(dtype=wp.float32),
-    alpha2_out: wp.array(dtype=wp.float32),
-    L1: wp.float32,
-    L2: wp.float32,
-    m1: wp.float32,
-    m2: wp.float32,
-    g: wp.float32,
-):
-    """Compute angular accelerations for double pendulum"""
-    tid = wp.tid()
-
-    t1 = theta1[tid]
-    w1 = omega1[tid]
-    t2 = theta2[tid]
-    w2 = omega2[tid]
-
-    delta = t1 - t2
-    sin_delta = wp.sin(delta)
-    cos_delta = wp.cos(delta)
-    cos_2delta = wp.cos(2.0 * delta)
-
-    denom1 = L1 * (2.0 * m1 + m2 - m2 * cos_2delta)
-    denom2 = L2 * (2.0 * m1 + m2 - m2 * cos_2delta)
-
+@wp.func
+def pendulum_dynamics(
+    t1: wp.float32, w1: wp.float32,
+    t2: wp.float32, w2: wp.float32,
+    L1: wp.float32, L2: wp.float32,
+    m1: wp.float32, m2: wp.float32,
+    g:  wp.float32,
+) -> wp.vec2:
+    """Compute (alpha1, alpha2) for double pendulum — callable from within a kernel."""
+    delta  = t1 - t2
+    sin_d  = wp.sin(delta)
+    cos_d  = wp.cos(delta)
+    cos_2d = wp.cos(2.0 * delta)
+    denom  = 2.0 * m1 + m2 - m2 * cos_2d
     num1 = (-g * (2.0 * m1 + m2) * wp.sin(t1)
             - m2 * g * wp.sin(t1 - 2.0 * t2)
-            - 2.0 * sin_delta * m2 * (w2 * w2 * L2 + w1 * w1 * L1 * cos_delta))
-
-    num2 = (2.0 * sin_delta * (w1 * w1 * L1 * (m1 + m2)
-            + g * (m1 + m2) * wp.cos(t1)
-            + w2 * w2 * L2 * m2 * cos_delta))
-
-    alpha1_out[tid] = num1 / denom1
-    alpha2_out[tid] = num2 / denom2
+            - 2.0 * sin_d * m2 * (w2*w2*L2 + w1*w1*L1*cos_d))
+    num2 = (2.0 * sin_d * (w1*w1*L1*(m1+m2)
+            + g*(m1+m2)*wp.cos(t1)
+            + w2*w2*L2*m2*cos_d))
+    return wp.vec2(num1 / (L1*denom), num2 / (L2*denom))
 
 
 @wp.kernel
-def explicit_euler_step_pt(
-    theta1: wp.array(dtype=wp.float32),
-    omega1: wp.array(dtype=wp.float32),
-    theta2: wp.array(dtype=wp.float32),
-    omega2: wp.array(dtype=wp.float32),
-    alpha1: wp.array(dtype=wp.float32),
-    alpha2: wp.array(dtype=wp.float32),
+def implicit_euler_solve_pt(
+    theta1: wp.array(dtype=wp.float32), omega1: wp.array(dtype=wp.float32),
+    theta2: wp.array(dtype=wp.float32), omega2: wp.array(dtype=wp.float32),
     dt: wp.array(dtype=wp.float32),
+    L1: wp.float32, L2: wp.float32, m1: wp.float32, m2: wp.float32, g: wp.float32,
+    newton_tol: wp.float32, newton_max_iter: wp.int32,
 ):
-    """Explicit Euler update with per-thread dt"""
+    """Run the full fixed-point loop on-device with per-thread dt — no CPU round-trips."""
     tid = wp.tid()
-    theta1[tid] = theta1[tid] + dt[tid] * omega1[tid]
-    omega1[tid] = omega1[tid] + dt[tid] * alpha1[tid]
-    theta2[tid] = theta2[tid] + dt[tid] * omega2[tid]
-    omega2[tid] = omega2[tid] + dt[tid] * alpha2[tid]
+    h = dt[tid]
+    t1_prev = theta1[tid];  w1_prev = omega1[tid]
+    t2_prev = theta2[tid];  w2_prev = omega2[tid]
 
+    # Initial guess: explicit Euler
+    acc = pendulum_dynamics(t1_prev, w1_prev, t2_prev, w2_prev, L1, L2, m1, m2, g)
+    t1 = t1_prev + h * w1_prev;  w1 = w1_prev + h * acc[0]
+    t2 = t2_prev + h * w2_prev;  w2 = w2_prev + h * acc[1]
 
-@wp.kernel
-def fixed_point_update_pt(
-    theta1:      wp.array(dtype=wp.float32),
-    omega1:      wp.array(dtype=wp.float32),
-    theta2:      wp.array(dtype=wp.float32),
-    omega2:      wp.array(dtype=wp.float32),
-    theta1_prev: wp.array(dtype=wp.float32),
-    omega1_prev: wp.array(dtype=wp.float32),
-    theta2_prev: wp.array(dtype=wp.float32),
-    omega2_prev: wp.array(dtype=wp.float32),
-    alpha1:      wp.array(dtype=wp.float32),
-    alpha2:      wp.array(dtype=wp.float32),
-    dt:          wp.array(dtype=wp.float32),
-):
-    tid = wp.tid()
-    theta1[tid] = theta1_prev[tid] + dt[tid] * omega1[tid]
-    omega1[tid] = omega1_prev[tid] + dt[tid] * alpha1[tid]
-    theta2[tid] = theta2_prev[tid] + dt[tid] * omega2[tid]
-    omega2[tid] = omega2_prev[tid] + dt[tid] * alpha2[tid]
+    # Fixed-point loop — per-thread convergence, no CPU round-trip
+    for _iter in range(newton_max_iter):
+        acc = pendulum_dynamics(t1, w1, t2, w2, L1, L2, m1, m2, g)
+        r0 = t1 - t1_prev - h * w1;  r1 = w1 - w1_prev - h * acc[0]
+        r2 = t2 - t2_prev - h * w2;  r3 = w2 - w2_prev - h * acc[1]
+        if wp.sqrt(r0*r0 + r1*r1 + r2*r2 + r3*r3) < newton_tol:
+            break
+        t1 = t1_prev + h * w1;  w1 = w1_prev + h * acc[0]
+        t2 = t2_prev + h * w2;  w2 = w2_prev + h * acc[1]
 
-
-@wp.kernel
-def implicit_euler_residual_pt(
-    theta1: wp.array(dtype=wp.float32),
-    omega1: wp.array(dtype=wp.float32),
-    theta2: wp.array(dtype=wp.float32),
-    omega2: wp.array(dtype=wp.float32),
-    theta1_prev: wp.array(dtype=wp.float32),
-    omega1_prev: wp.array(dtype=wp.float32),
-    theta2_prev: wp.array(dtype=wp.float32),
-    omega2_prev: wp.array(dtype=wp.float32),
-    alpha1: wp.array(dtype=wp.float32),
-    alpha2: wp.array(dtype=wp.float32),
-    residual: wp.array(dtype=wp.float32),
-    dt: wp.array(dtype=wp.float32),
-):
-    """Compute residual with per-thread dt"""
-    tid = wp.tid()
-
-    r0 = theta1[tid] - theta1_prev[tid] - dt[tid] * omega1[tid]
-    r1 = omega1[tid] - omega1_prev[tid] - dt[tid] * alpha1[tid]
-    r2 = theta2[tid] - theta2_prev[tid] - dt[tid] * omega2[tid]
-    r3 = omega2[tid] - omega2_prev[tid] - dt[tid] * alpha2[tid]
-
-    residual[tid] = wp.sqrt(r0 * r0 + r1 * r1 + r2 * r2 + r3 * r3)
+    theta1[tid] = t1;  omega1[tid] = w1
+    theta2[tid] = t2;  omega2[tid] = w2
 
 
 @wp.kernel
@@ -220,6 +169,8 @@ class AdaptiveDoublePendulumWarpPT:
         self.accepted_steps = np.zeros(n, dtype=int)
         self.rejected_steps = np.zeros(n, dtype=int)
         self.wall_clock_time = 0.0
+        self.min_dt_accepted = np.full(n, np.inf)
+        self.max_dt_accepted = np.zeros(n)
 
         # Final state (always stored, even without history)
         self.final_theta1 = None
@@ -228,49 +179,16 @@ class AdaptiveDoublePendulumWarpPT:
         self.final_omega2 = None
 
     def _implicit_euler_step_gpu_pt(self, theta1, omega1, theta2, omega2, dt_wp):
-        """Implicit Euler step with per-thread dt.
+        """Implicit Euler step with per-thread dt — entire fixed-point loop runs on-device.
 
         dt_wp: wp.array(dtype=wp.float32) — per-thread step sizes, already on GPU.
         """
-        n = self.num_pendulums
-
-        # On-device copies — no CPU round-trip
-        theta1_prev = wp.clone(theta1)
-        omega1_prev = wp.clone(omega1)
-        theta2_prev = wp.clone(theta2)
-        omega2_prev = wp.clone(omega2)
-
-        alpha1   = wp.zeros(n, dtype=wp.float32)
-        alpha2   = wp.zeros(n, dtype=wp.float32)
-        residual = wp.zeros(n, dtype=wp.float32)
-
-        # Initial guess: explicit Euler with per-thread dt
-        wp.launch(double_pendulum_dynamics, dim=n,
-                  inputs=[theta1, omega1, theta2, omega2, alpha1, alpha2,
-                          self.length1, self.length2, self.mass1, self.mass2, self.gravity])
-        wp.launch(explicit_euler_step_pt, dim=n,
-                  inputs=[theta1, omega1, theta2, omega2, alpha1, alpha2, dt_wp])
-
-        # Fixed-point iteration
-        for _ in range(self.newton_max_iter):
-            wp.launch(double_pendulum_dynamics, dim=n,
-                      inputs=[theta1, omega1, theta2, omega2, alpha1, alpha2,
-                              self.length1, self.length2, self.mass1, self.mass2, self.gravity])
-            wp.launch(implicit_euler_residual_pt, dim=n,
-                      inputs=[theta1, omega1, theta2, omega2,
-                              theta1_prev, omega1_prev, theta2_prev, omega2_prev,
-                              alpha1, alpha2, residual, dt_wp])
-            wp.synchronize()
-            max_residual = np.max(residual.numpy())   # one small scalar pull — unavoidable
-            if max_residual < self.newton_tol:
-                break
-
-            # GPU-only fixed-point update — replaces numpy round-trip
-            wp.launch(fixed_point_update_pt, dim=n,
-                      inputs=[theta1, omega1, theta2, omega2,
-                               theta1_prev, omega1_prev, theta2_prev, omega2_prev,
-                               alpha1, alpha2, dt_wp])
-
+        wp.launch(implicit_euler_solve_pt,
+                  dim=self.num_pendulums,
+                  inputs=[theta1, omega1, theta2, omega2,
+                          dt_wp,
+                          self.length1, self.length2, self.mass1, self.mass2, self.gravity,
+                          np.float32(self.newton_tol), np.int32(self.newton_max_iter)])
         return theta1, omega1, theta2, omega2
 
     def _calc_adjusted_step_sizes_vec(self, errors, dt_arr, at_minimum):
@@ -494,6 +412,10 @@ class AdaptiveDoublePendulumWarpPT:
 
             self.accepted_steps[accepted] += 1
             self.rejected_steps[rejected] += 1
+            self.min_dt_accepted = np.where(accepted,
+                np.minimum(self.min_dt_accepted, dt_clamped), self.min_dt_accepted)
+            self.max_dt_accepted = np.where(accepted,
+                np.maximum(self.max_dt_accepted, dt_clamped), self.max_dt_accepted)
 
             # Mark done
             active[current_time >= self.end_time] = False

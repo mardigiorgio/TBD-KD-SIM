@@ -111,6 +111,10 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
         # max across pendulums ≈ PT loop iteration count (determines actual wall time)
         pt_accepted_max=np.zeros((n_pts, num_repeats)),
         pt_rejected_max=np.zeros((n_pts, num_repeats)),
+        # worst-case (minimum) step size used — gated by worst pendulum in each variant
+        global_dt_min=np.zeros((n_pts, num_repeats)),
+        pt_dt_min_worst=np.zeros((n_pts, num_repeats)),   # min across all pendulums
+        pt_dt_min_median=np.zeros((n_pts, num_repeats)),  # median of per-pendulum min
     )
 
     for i, N in enumerate(N_values):
@@ -133,6 +137,7 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
             results['global_times'][i, rep] = sim_g.wall_clock_time
             results['global_accepted'][i, rep] = sim_g.accepted_steps
             results['global_rejected'][i, rep] = sim_g.rejected_steps
+            results['global_dt_min'][i, rep] = sim_g.min_dt_accepted
 
             # --- Per-thread dt ---
             print(f"  Rep {rep+1}/{num_repeats} PT:    ", end='', flush=True)
@@ -153,6 +158,8 @@ def run_scalability_benchmark(N_values=None, epsilon_acc=1e-3,
             results['pt_rejected_mean'][i, rep] = np.mean(sim_pt.rejected_steps)
             results['pt_accepted_max'][i, rep] = np.max(sim_pt.accepted_steps)
             results['pt_rejected_max'][i, rep] = np.max(sim_pt.rejected_steps)
+            results['pt_dt_min_worst'][i, rep]  = np.min(sim_pt.min_dt_accepted)
+            results['pt_dt_min_median'][i, rep] = np.median(sim_pt.min_dt_accepted)
 
             print(f"  => Global={sim_g.wall_clock_time:.3f}s "
                   f"({sim_g.accepted_steps} acc / {sim_g.rejected_steps} rej), "

@@ -66,7 +66,6 @@ def plot_scalability(data):
     ax.set_title(f'Scalability: Wall Time vs N\n'
                  f'(eps={eps:.0e}, T={end_t:.0f}s, chaotic ICs near [pi, 0])',
                  fontsize=15, fontweight='bold')
-    ax.legend(fontsize=12, loc='best')
     ax.grid(True, alpha=0.3, which='both', linestyle='--')
     ax.tick_params(labelsize=12)
     fig.tight_layout()
